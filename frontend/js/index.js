@@ -1014,6 +1014,72 @@
         return result;
     }
 
+    function buildRoleTopFromStats(stats, minMatchesBase = 50) {
+        const roleBuckets = {
+            Carry: [],
+            Mid: [],
+            Offlane: [],
+            Support: [],
+            "Hard Support": []
+        };
+        (stats || []).forEach((h) => {
+            const roles = h.roles || [];
+            const isSupport = roles.includes("Support");
+            const isCarry = roles.includes("Carry");
+            const isNuker = roles.includes("Nuker");
+            const isDurable = roles.includes("Durable");
+            const isInitiator = roles.includes("Initiator");
+            const isDisabler = roles.includes("Disabler");
+
+            const scores = {
+                Carry: (isCarry ? 3 : 0) + (isNuker ? 1 : 0) + (isSupport ? -3 : 0),
+                Mid: (isNuker ? 3 : 0) + (isCarry ? 1 : 0) + (isSupport ? -3 : 0),
+                Offlane: (isDurable ? 2 : 0) + (isInitiator ? 2 : 0) + (isDisabler ? 1 : 0) + (isCarry ? -2 : 0),
+                Support: (isSupport ? 3 : 0) + (isDisabler ? 1 : 0) + (isCarry ? -3 : 0),
+                "Hard Support": (isSupport ? 3 : 0) + (isDisabler ? 2 : 0) + (isCarry ? -3 : 0),
+            };
+            let bestRole = null;
+            let bestScore = -999;
+            Object.keys(scores).forEach((role) => {
+                const sc = scores[role];
+                if (sc > bestScore) {
+                    bestScore = sc;
+                    bestRole = role;
+                }
+            });
+            if (!bestRole || bestScore <= 0) return;
+            roleBuckets[bestRole].push({
+                hero_id: h.id || h.hero_id,
+                matches: h.pro_pick || h.matches || 0,
+                wins: h.pro_win || h.wins || 0,
+                winrate: h.pro_pick ? (h.pro_win / h.pro_pick) * 100 : (h.matches ? (h.wins / h.matches) * 100 : 0)
+            });
+        });
+
+        const pickTop = (list, minMatches) => (list || [])
+            .filter((h) => h.matches >= minMatches)
+            .filter((h) => h.winrate >= 50)
+            .map((h) => ({ ...h, score: h.winrate * Math.log(Math.max(2, h.matches)) }))
+            .sort((a, b) => {
+                if (b.winrate !== a.winrate) return b.winrate - a.winrate;
+                if (b.score !== a.score) return b.score - a.score;
+                return b.matches - a.matches;
+            })
+            .slice(0, 5);
+
+        const thresholds = [minMatchesBase, 30, 20];
+        const result = {};
+        Object.keys(roleBuckets).forEach((role) => {
+            let list = [];
+            for (const minM of thresholds) {
+                list = pickTop(roleBuckets[role], minM);
+                if (list.length >= 5) break;
+            }
+            result[role] = list;
+        });
+        return result;
+    }
+
     async function loadWinrate() {
         const roleGrid = document.getElementById('roleGrid');
         if (!roleGrid || roleGrid.dataset.loaded) return;
@@ -1053,6 +1119,9 @@
                 const fallbackRes = await fetch('https://api.opendota.com/api/heroStats');
                 const fallback = await fallbackRes.json();
                 heroStats = fallback || [];
+            }
+            if (!roleTop) {
+                roleTop = buildRoleTopFromStats(heroStats, 50);
             }
             let patchLabel = 'Unknown';
             if (patchRes.ok) {
