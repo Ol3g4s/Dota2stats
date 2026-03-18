@@ -1015,68 +1015,77 @@
     }
 
     function buildRoleTopFromStats(stats, minMatchesBase = 50) {
-        const roleBuckets = {
-            Carry: [],
-            Mid: [],
-            Offlane: [],
-            Support: [],
-            "Hard Support": []
-        };
-        (stats || []).forEach((h) => {
-            const roles = h.roles || [];
-            const isSupport = roles.includes("Support");
-            const isCarry = roles.includes("Carry");
-            const isNuker = roles.includes("Nuker");
-            const isDurable = roles.includes("Durable");
-            const isInitiator = roles.includes("Initiator");
-            const isDisabler = roles.includes("Disabler");
+        const roles = ["Carry", "Mid", "Offlane", "Support", "Hard Support"];
+        const candidates = { Carry: [], Mid: [], Offlane: [], Support: [], "Hard Support": [] };
 
-            const scores = {
-                Carry: (isCarry ? 3 : 0) + (isNuker ? 1 : 0) + (isSupport ? -3 : 0),
-                Mid: (isNuker ? 3 : 0) + (isCarry ? 1 : 0) + (isSupport ? -3 : 0),
-                Offlane: (isDurable ? 2 : 0) + (isInitiator ? 2 : 0) + (isDisabler ? 1 : 0) + (isCarry ? -2 : 0),
-                Support: (isSupport ? 3 : 0) + (isDisabler ? 1 : 0) + (isCarry ? -3 : 0),
-                "Hard Support": (isSupport ? 3 : 0) + (isDisabler ? 2 : 0) + (isCarry ? -3 : 0),
+        const scoreHero = (h) => {
+            const rolesList = h.roles || [];
+            const isSupport = rolesList.includes("Support");
+            const isCarry = rolesList.includes("Carry");
+            const isNuker = rolesList.includes("Nuker");
+            const isDurable = rolesList.includes("Durable");
+            const isInitiator = rolesList.includes("Initiator");
+            const isDisabler = rolesList.includes("Disabler");
+
+            return {
+                Carry: (isCarry ? 4 : 0) + (isSupport ? -4 : 0) + (isNuker ? -1 : 0),
+                Mid: (isNuker ? 4 : 0) + (isCarry ? 1 : 0) + (isSupport ? -4 : 0),
+                Offlane: (isDurable ? 3 : 0) + (isInitiator ? 2 : 0) + (isDisabler ? 1 : 0) + (isCarry ? -2 : 0),
+                Support: (isSupport ? 4 : 0) + (isDisabler ? 1 : 0) + (isCarry ? -4 : 0),
+                "Hard Support": (isSupport ? 4 : 0) + (isDisabler ? 2 : 0) + (isCarry ? -4 : 0),
             };
-            let bestRole = null;
-            let bestScore = -999;
-            Object.keys(scores).forEach((role) => {
-                const sc = scores[role];
-                if (sc > bestScore) {
-                    bestScore = sc;
-                    bestRole = role;
-                }
-            });
-            if (!bestRole || bestScore <= 0) return;
-            roleBuckets[bestRole].push({
-                hero_id: h.id || h.hero_id,
-                matches: h.pro_pick || h.matches || 0,
-                wins: h.pro_win || h.wins || 0,
-                winrate: h.pro_pick ? (h.pro_win / h.pro_pick) * 100 : (h.matches ? (h.wins / h.matches) * 100 : 0)
+        };
+
+        (stats || []).forEach((h) => {
+            const matches = h.pro_pick || h.matches || 0;
+            const wins = h.pro_win || h.wins || 0;
+            if (!matches) return;
+            const winrate = matches ? (wins / matches) * 100 : 0;
+            if (winrate < 50) return;
+            const scores = scoreHero(h);
+            const heroId = h.id || h.hero_id;
+            roles.forEach((role) => {
+                const score = scores[role] || 0;
+                if (score <= 0) return;
+                candidates[role].push({
+                    hero_id: heroId,
+                    matches,
+                    wins,
+                    winrate,
+                    score: winrate * Math.log(Math.max(2, matches)),
+                    roleScore: score
+                });
             });
         });
 
-        const pickTop = (list, minMatches) => (list || [])
-            .filter((h) => h.matches >= minMatches)
-            .filter((h) => h.winrate >= 50)
-            .map((h) => ({ ...h, score: h.winrate * Math.log(Math.max(2, h.matches)) }))
-            .sort((a, b) => {
+        roles.forEach((role) => {
+            candidates[role].sort((a, b) => {
                 if (b.winrate !== a.winrate) return b.winrate - a.winrate;
+                if (b.roleScore !== a.roleScore) return b.roleScore - a.roleScore;
                 if (b.score !== a.score) return b.score - a.score;
                 return b.matches - a.matches;
-            })
-            .slice(0, 5);
-
-        const thresholds = [minMatchesBase, 30, 20];
-        const result = {};
-        Object.keys(roleBuckets).forEach((role) => {
-            let list = [];
-            for (const minM of thresholds) {
-                list = pickTop(roleBuckets[role], minM);
-                if (list.length >= 5) break;
-            }
-            result[role] = list;
+            });
         });
+
+        const assigned = new Map(); // hero_id -> role
+        const result = { Carry: [], Mid: [], Offlane: [], Support: [], "Hard Support": [] };
+        const thresholds = [minMatchesBase, 30, 20];
+
+        const takeForRole = (role) => {
+            for (const minM of thresholds) {
+                for (const cand of candidates[role]) {
+                    if (result[role].length >= 5) break;
+                    if (cand.matches < minM) continue;
+                    if (assigned.has(cand.hero_id)) continue;
+                    assigned.set(cand.hero_id, role);
+                    result[role].push(cand);
+                }
+                if (result[role].length >= 5) break;
+            }
+        };
+
+        roles.forEach((role) => takeForRole(role));
+
         return result;
     }
 
