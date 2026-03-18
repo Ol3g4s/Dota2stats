@@ -22,7 +22,7 @@ app.add_middleware(
 
 # Static files (CSS/JS)
 BASE_DIR = os.path.dirname(__file__)
-FRONTEND_DIR = os.path.abspath(os.path.join(BASE_DIR, "..", "frontend"))
+FRONTEND_DIR = os.path.abspath(os.path.join(BASE_DIR, "frontend"))
 app.mount("/css", StaticFiles(directory=os.path.join(FRONTEND_DIR, "css")), name="css")
 app.mount("/js", StaticFiles(directory=os.path.join(FRONTEND_DIR, "js")), name="js")
 
@@ -38,17 +38,17 @@ app.include_router(auth_router, prefix="/auth")
 @app.get("/")
 async def read_index():
     # Вказуємо шлях до index.html. Переконайся, що папка frontend поруч із backend
-    path = os.path.join(os.getcwd(), "..", "frontend", "index.html")
+    path = os.path.join(FRONTEND_DIR, "index.html")
     return FileResponse(path)
 
 @app.get("/match")
 async def read_match():
-    path = os.path.join(os.getcwd(), "..", "frontend", "match.html")
+    path = os.path.join(FRONTEND_DIR, "match.html")
     return FileResponse(path)
 
 @app.get("/news")
 async def read_news():
-    path = os.path.join(os.getcwd(), "..", "frontend", "news.html")
+    path = os.path.join(FRONTEND_DIR, "news.html")
     return FileResponse(path)
 
 # Робимо так, щоб API розуміло довгі ID
