@@ -953,7 +953,7 @@
     }
 
     function getRoleTop(stats, role) {
-        const roleScore = (h) => {
+        const scoreMap = (h) => {
             const roles = h.roles || [];
             const isSupport = roles.includes("Support");
             const isCarry = roles.includes("Carry");
@@ -962,35 +962,42 @@
             const isInitiator = roles.includes("Initiator");
             const isDisabler = roles.includes("Disabler");
             const isJungler = roles.includes("Jungler");
-            const isEscape = roles.includes("Escape");
-            const isPusher = roles.includes("Pusher");
 
-            if (role === "Carry") {
-                return (isCarry ? 2 : 0) + (isNuker ? 1 : 0) + (isSupport ? -2 : 0) + (isJungler ? -1 : 0);
-            }
-            if (role === "Mid") {
-                return (isNuker ? 2 : 0) + (isCarry ? 1 : 0) + (isSupport ? -2 : 0) + (isJungler ? -1 : 0);
-            }
-            if (role === "Offlane") {
-                return (isDurable ? 2 : 0) + (isInitiator ? 2 : 0) + (isDisabler ? 1 : 0) + (isCarry ? -2 : 0);
-            }
-            if (role === "Support") {
-                return (isSupport ? 2 : 0) + (isDisabler ? 1 : 0) + (isCarry ? -2 : 0);
-            }
-            if (role === "Hard Support") {
-                return (isSupport ? 2 : 0) + (isDisabler ? 2 : 0) + (isCarry ? -2 : 0);
-            }
-            return 0;
+            return {
+                carry: (isCarry ? 3 : 0) + (isNuker ? 1 : 0) + (isSupport ? -3 : 0) + (isJungler ? -1 : 0),
+                mid: (isNuker ? 3 : 0) + (isCarry ? 1 : 0) + (isSupport ? -3 : 0) + (isJungler ? -1 : 0),
+                offlane: (isDurable ? 2 : 0) + (isInitiator ? 2 : 0) + (isDisabler ? 1 : 0) + (isCarry ? -2 : 0),
+                support: (isSupport ? 3 : 0) + (isDisabler ? 1 : 0) + (isCarry ? -3 : 0),
+                hard: (isSupport ? 3 : 0) + (isDisabler ? 2 : 0) + (isCarry ? -3 : 0),
+            };
         };
 
-        const pickTop = (minMatches, minScore) => stats
+        const roleKey = role === "Carry" ? "carry"
+            : role === "Mid" ? "mid"
+            : role === "Offlane" ? "offlane"
+            : role === "Support" ? "support"
+            : "hard";
+
+        const pickTop = (minMatches, minScore, requireGap) => stats
             .filter((h) => h.pro_pick >= minMatches)
             .filter((h) => {
                 const wr = h.pro_pick ? (h.pro_win / h.pro_pick) * 100 : 0;
                 return wr >= 50;
             })
-            .map((h) => ({ ...h, __score: roleScore(h) }))
+            .map((h) => {
+                const scores = scoreMap(h);
+                return { ...h, __scores: scores, __score: scores[roleKey] || 0 };
+            })
             .filter((h) => h.__score >= minScore)
+            .filter((h) => {
+                const s = h.__scores;
+                if (roleKey === "carry") return h.__score >= s.mid + requireGap;
+                if (roleKey === "mid") return h.__score >= s.carry + requireGap;
+                if (roleKey === "offlane") return h.__score >= Math.max(s.carry, s.mid) + requireGap;
+                if (roleKey === "support") return h.__score >= s.carry + requireGap;
+                if (roleKey === "hard") return h.__score >= s.support + requireGap;
+                return true;
+            })
             .sort((a, b) => {
                 const wrA = a.pro_win / a.pro_pick;
                 const wrB = b.pro_win / b.pro_pick;
@@ -1000,12 +1007,11 @@
             })
             .slice(0, 5);
 
-        let list = pickTop(100, 2);
-        if (list.length < 5) list = pickTop(100, 1);
-        if (list.length < 5) list = pickTop(50, 1);
-        if (list.length < 5) list = pickTop(30, 1);
-        if (list.length < 5) list = pickTop(30, 0);
-        return list.map(({ __score, ...rest }) => rest);
+        let list = pickTop(100, 2, 1);
+        if (list.length < 5) list = pickTop(100, 2, 0);
+        if (list.length < 5) list = pickTop(50, 1, 0);
+        if (list.length < 5) list = pickTop(30, 1, 0);
+        return list.map(({ __score, __scores, ...rest }) => rest);
     }
 
     function renderRoleColumns(stats) {
