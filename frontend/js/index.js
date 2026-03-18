@@ -902,17 +902,136 @@
         window.location.href = openIdUrl;
     }
 
+    function mapRowToPosition(row) {
+        const lane = Number(row.lane_role);
+        const roaming = row.is_roaming === true || row.is_roaming === 1 || row.is_roaming === '1';
+        const gpm = Number(row.gpm || row.gold_per_min || 0);
+        if (lane === 2) return 2; // Mid
+        if (lane === 1) {
+            if (roaming) return 4;
+            return gpm >= 420 ? 1 : 5;
+        }
+        if (lane === 3) {
+            if (roaming) return 4;
+            return gpm >= 380 ? 3 : 4;
+        }
+        if (lane === 4) {
+            return gpm >= 420 ? 1 : 4;
+        }
+        return null;
+    }
+
+    function buildRoleTopFromRows(rows, minMatchesBase = 50) {
+        const perHeroPos = new Map();
+        (rows || []).forEach((r) => {
+            const pos = mapRowToPosition(r);
+            if (!pos) return;
+            const heroId = Number(r.hero_id);
+            if (!heroId) return;
+            const matches = Number(r.matches || 0);
+            const wins = Number(r.wins || 0);
+            if (!matches) return;
+            if (!perHeroPos.has(heroId)) perHeroPos.set(heroId, {});
+            const bucket = perHeroPos.get(heroId);
+            if (!bucket[pos]) bucket[pos] = { matches: 0, wins: 0 };
+            bucket[pos].matches += matches;
+            bucket[pos].wins += wins;
+        });
+
+        const primary = [];
+        perHeroPos.forEach((bucket, heroId) => {
+            let bestPos = null;
+            let bestMatches = -1;
+            let bestWinrate = -1;
+            Object.keys(bucket).forEach((posKey) => {
+                const pos = Number(posKey);
+                const data = bucket[pos];
+                const matches = data.matches || 0;
+                const winrate = matches ? (data.wins / matches) * 100 : 0;
+                if (matches > bestMatches || (matches === bestMatches && winrate > bestWinrate)) {
+                    bestPos = pos;
+                    bestMatches = matches;
+                    bestWinrate = winrate;
+                }
+            });
+            if (!bestPos) return;
+            primary.push({
+                hero_id: heroId,
+                pos: bestPos,
+                matches: bestMatches,
+                wins: bucket[bestPos].wins,
+                winrate: bestWinrate
+            });
+        });
+
+        const roleMap = {
+            1: "Carry",
+            2: "Mid",
+            3: "Offlane",
+            4: "Support",
+            5: "Hard Support"
+        };
+        const result = {
+            Carry: [],
+            Mid: [],
+            Offlane: [],
+            Support: [],
+            "Hard Support": []
+        };
+
+        primary.forEach((h) => {
+            const role = roleMap[h.pos];
+            if (!role) return;
+            result[role].push(h);
+        });
+
+        const pickTop = (list, minMatches) => {
+            return (list || [])
+                .filter((h) => h.matches >= minMatches)
+                .filter((h) => h.winrate >= 50)
+                .map((h) => ({
+                    ...h,
+                    score: h.winrate * Math.log(Math.max(2, h.matches))
+                }))
+                .sort((a, b) => {
+                    if (b.winrate !== a.winrate) return b.winrate - a.winrate;
+                    if (b.score !== a.score) return b.score - a.score;
+                    return b.matches - a.matches;
+                })
+                .slice(0, 5);
+        };
+
+        const thresholds = [minMatchesBase, 30, 20];
+        Object.keys(result).forEach((role) => {
+            let list = [];
+            for (const minM of thresholds) {
+                list = pickTop(result[role], minM);
+                if (list.length >= 5) break;
+            }
+            result[role] = list;
+        });
+
+        return result;
+    }
+
     async function loadWinrate() {
         const roleGrid = document.getElementById('roleGrid');
         if (!roleGrid || roleGrid.dataset.loaded) return;
         roleGrid.innerHTML = `<div class="muted">${t('loading_heroes')}</div>`;
         try {
             await ensureConstants();
-            const [metaRes, patchRes] = await Promise.all([
+            const [metaRes, roleRes, patchRes] = await Promise.all([
                 fetch('/api/meta/heroes?days=8'),
+                fetch('/api/meta/roles?days=8'),
                 fetch('https://api.opendota.com/api/constants/patch')
             ]);
             let heroStats = [];
+            let roleTop = null;
+            if (roleRes.ok) {
+                const roleData = await roleRes.json();
+                const rows = (roleData && roleData.rows) ? roleData.rows : [];
+                if (rows.length) roleTop = buildRoleTopFromRows(rows, 50);
+            }
             if (metaRes.ok) {
                 const metaData = await metaRes.json();
                 const rows = (metaData && metaData.rows) ? metaData.rows : [];
@@ -944,7 +1063,7 @@
             if (patchInfo) patchInfo.textContent = `${t('patch_label')} ${patchLabel}`;
 
             window.__HERO_STATS__ = heroStats;
-            renderRoleColumns(heroStats);
+            renderRoleColumns(heroStats, roleTop);
             renderMetaTop5(heroStats);
             roleGrid.dataset.loaded = '1';
         } catch (e) {
@@ -1014,21 +1133,30 @@
         return list.map(({ __score, __scores, ...rest }) => rest);
     }
 
-    function renderRoleColumns(stats) {
+    function renderRoleColumns(stats, roleTop) {
         const roleGrid = document.getElementById('roleGrid');
         if (!roleGrid) return;
         const roles = ["Carry", "Mid", "Offlane", "Support", "Hard Support"];
         const html = roles.map((role) => {
-            const list = getRoleTop(stats, role);
+            const list = roleTop && roleTop[role] ? roleTop[role].map((h) => {
+                const heroConst = HERO_DATA_BY_ID[h.hero_id] || HERO_DATA[h.hero_id];
+                return {
+                    ...h,
+                    name: heroConst ? heroConst.name : "npc_dota_hero_unknown",
+                    localized_name: heroConst ? heroConst.localized_name : "Unknown"
+                };
+            }) : getRoleTop(stats, role);
             const rows = list.map((h) => {
-                const wr = h.pro_pick ? ((h.pro_win / h.pro_pick) * 100).toFixed(1) : "0.0";
+                const matches = h.matches ?? h.pro_pick ?? 0;
+                const wins = h.wins ?? h.pro_win ?? 0;
+                const wr = matches ? ((wins / matches) * 100).toFixed(1) : "0.0";
                 return `
                     <div class="role-hero">
                         <div class="role-hero-left">
                             <img class="leader-hero" src="https://cdn.cloudflare.steamstatic.com/apps/dota2/images/dota_react/heroes/${h.name.replace('npc_dota_hero_', '')}.png" alt="">
                             <div>
                                 <div class="role-hero-name">${h.localized_name}</div>
-                                <div class="role-hero-meta">${h.pro_pick} РјР°С‚С‡С–РІ</div>
+                                <div class="role-hero-meta">${matches} РјР°С‚С‡С–РІ</div>
                             </div>
                         </div>
                         <div class="role-hero-wr">${wr}%</div>
